@@ -1,0 +1,22 @@
+{
+  "name": "hotel-sales-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Daily sales ledger and owner reports for Food Truck + JP Nagar outlet, backed by Supabase Postgres.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "migrate": "node migrate.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.14",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "better-sqlite3": "^11.3.0"
+  }
+}
