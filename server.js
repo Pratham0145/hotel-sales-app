@@ -192,6 +192,57 @@ app.get('/api/owner-view/:year/:month', asyncRoute(async (req, res) => {
   res.json({ truck: toMap(truckRows), jp: toMap(jpRows), itemsUsed: toMap(itemsRows) });
 }));
 
+// ---------------------------------------------------------------------------
+// Payment / Salary API (employees + ad-hoc payments) — owner-only, same gate
+// as owner-view above.
+// ---------------------------------------------------------------------------
+app.get('/api/employees', asyncRoute(async (req, res) => {
+  if (!isOwnerRequest(req)) return res.status(403).json({ error: 'Owner password required' });
+  const { rows } = await query('SELECT * FROM employees ORDER BY name');
+  res.json(rows);
+}));
+
+app.post('/api/employees', asyncRoute(async (req, res) => {
+  if (!isOwnerRequest(req)) return res.status(403).json({ error: 'Owner password required' });
+  const { name, salary } = req.body;
+  if (!name || !toNum(salary)) return res.status(400).json({ error: 'name and salary required' });
+  const { rows } = await query(
+    `INSERT INTO employees (name, salary) VALUES ($1, $2) RETURNING *`,
+    [name, toNum(salary)]
+  );
+  res.json(rows[0]);
+}));
+
+app.delete('/api/employees/:id', asyncRoute(async (req, res) => {
+  if (!isOwnerRequest(req)) return res.status(403).json({ error: 'Owner password required' });
+  await query('DELETE FROM employees WHERE id = $1', [req.params.id]);
+  res.json({ ok: true });
+}));
+
+app.get('/api/payments', asyncRoute(async (req, res) => {
+  if (!isOwnerRequest(req)) return res.status(403).json({ error: 'Owner password required' });
+  const { rows } = await query('SELECT * FROM payments ORDER BY date DESC, id DESC');
+  res.json(rows);
+}));
+
+app.post('/api/payments', asyncRoute(async (req, res) => {
+  if (!isOwnerRequest(req)) return res.status(403).json({ error: 'Owner password required' });
+  const { emp_id, amount, date, note } = req.body;
+  if (!emp_id || !toNum(amount) || !date) return res.status(400).json({ error: 'emp_id, amount, date required' });
+  const { rows } = await query(
+    `INSERT INTO payments (emp_id, amount, date, note) VALUES ($1, $2, $3, $4) RETURNING *`,
+    [emp_id, toNum(amount), date, note || null]
+  );
+  res.json(rows[0]);
+}));
+
+app.delete('/api/payments/:id', asyncRoute(async (req, res) => {
+  if (!isOwnerRequest(req)) return res.status(403).json({ error: 'Owner password required' });
+  await query('DELETE FROM payments WHERE id = $1', [req.params.id]);
+  res.json({ ok: true });
+}));
+
+
 // Verify the owner password. If OWNER_PASSWORD isn't configured, this always
 // succeeds (the feature is simply off until you set one).
 app.post('/api/owner-unlock', (req, res) => {

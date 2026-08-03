@@ -772,3 +772,259 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
     document.getElementById(`view-${btn.dataset.view}`).classList.add('active');
   });
 });
+
+
+// ===========================================================================
+// Payment tab — employees + ad-hoc salary payments (owner-only, like Amount/Report)
+// ===========================================================================
+function monthlyDueArray(fixedSalary, asOfDate){
+  const curMonth = asOfDate.getMonth(); // 0-11; months before this one are due
+  const arr = [];
+  for(let m=0;m<12;m++) arr.push(m < curMonth ? fixedSalary : 0);
+  return arr;
+}
+function remainingArray(dueArr, totalPaid){
+  let cum = 0;
+  return dueArr.map(due => { cum += due; return Math.min(due, Math.max(0, cum - totalPaid)); });
+}
+function paymentTotalForEmp(payments, empId){
+  return payments.filter(p => p.emp_id === empId).reduce((s,p) => s + num(p.amount), 0);
+}
+function empSalaryStatus(emp, payments, asOfDate){
+  const dueArr = monthlyDueArray(num(emp.salary), asOfDate);
+  const totalDue = dueArr.reduce((a,b)=>a+b, 0);
+  const totalPaid = paymentTotalForEmp(payments, emp.id);
+  const remArr = remainingArray(dueArr, totalPaid);
+  const remaining = Math.max(0, totalDue - totalPaid);
+  const overpaid = Math.max(0, totalPaid - totalDue);
+  const projectedNextDue = Math.max(0, num(emp.salary) - overpaid);
+  return { dueArr, remArr, totalDue, totalPaid, remaining, overpaid, projectedNextDue };
+}
+
+function initPaymentView(containerId){
+  const container = document.getElementById(containerId);
+
+  if(!isUnlocked()){
+    container.innerHTML = `
+      <div class="card plain owner-lockscreen" style="grid-column:1/-1;">
+        <div class="lock-icon">🔒</div>
+        <div class="lock-title">Payment is owner-only</div>
+        <div class="lock-sub">Enter the owner password to log salary payments and see who's owed what.</div>
+        <button class="today-btn" id="${containerId}-unlockBtn">Enter password</button>
+      </div>
+    `;
+    document.getElementById(`${containerId}-unlockBtn`).addEventListener('click', openOwnerModal);
+    return;
+  }
+
+  const state = { sub:'status', employees:[], payments:[], asOfDate:new Date(), historyEmpId:null, openMonth:new Set() };
+
+  function isoToday(d){ const dt=d||new Date(); return `${dt.getFullYear()}-${pad2(dt.getMonth()+1)}-${pad2(dt.getDate())}`; }
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  async function loadAll(){
+    try{ state.employees = await api('/api/employees'); }catch(e){ state.employees = []; }
+    try{ state.payments = await api('/api/payments'); }catch(e){ state.payments = []; }
+    render();
+  }
+
+  function shell(){
+    return `
+      <div class="pay-tabs">
+        <button data-sub="status" class="${state.sub==='status'?'active':''}">📊 Status</button>
+        <button data-sub="add" class="${state.sub==='add'?'active':''}">➕ Add Payment</button>
+        <button data-sub="history" class="${state.sub==='history'?'active':''}">📜 History</button>
+        <button data-sub="employees" class="${state.sub==='employees'?'active':''}">👥 Employees</button>
+      </div>
+      <div id="${containerId}-subbody"></div>
+    `;
+  }
+
+  function render(){
+    container.innerHTML = shell();
+    const body = document.getElementById(`${containerId}-subbody`);
+    if(state.sub==='status') body.innerHTML = renderStatus();
+    else if(state.sub==='add') body.innerHTML = renderAdd();
+    else if(state.sub==='history') body.innerHTML = renderHistory();
+    else body.innerHTML = renderEmployees();
+    attach();
+  }
+
+  function renderStatus(){
+    if(state.employees.length===0){
+      return `<div class="card plain owner-lockscreen"><div class="lock-title">No employees yet</div><div class="lock-sub">Add someone in the Employees tab first.</div></div>`;
+    }
+    const cards = state.employees.map(emp=>{
+      const s = empSalaryStatus(emp, state.payments, state.asOfDate);
+      let cls, label;
+      if(s.remaining===0 && s.overpaid===0){ cls='good'; label='Settled'; }
+      else if(s.overpaid>0){ cls='warn'; label='Advance ' + fmtMoney(s.overpaid); }
+      else { cls='bad'; label='Due ' + fmtMoney(s.remaining); }
+      const open = state.openMonth.has(emp.id);
+      const monthTable = `
+        <table class="pay-month-grid">
+          <tr>${monthNames.map(m=>`<th>${m.slice(0,3)}</th>`).join('')}</tr>
+          <tr>${s.dueArr.map(d=>`<td class="due">${d?Math.round(d).toLocaleString('en-IN'):'–'}</td>`).join('')}</tr>
+          <tr>${s.remArr.map((r,i)=> s.dueArr[i]===0 ? '<td>–</td>' : `<td class="${r===0?'ok':'pending'}">${Math.round(r).toLocaleString('en-IN')}</td>`).join('')}</tr>
+        </table>`;
+      return `<div class="card emp-card">
+        <div class="emp-card-top">
+          <div><div class="emp-name">${escapeHtml(emp.name)}</div><div class="emp-sub">${fmtMoney(emp.salary)}/month</div></div>
+        </div>
+        <div class="stat-grid" style="margin-top:10px;">
+          <div class="stat-card"><div class="s-label">Total paid</div><div class="s-value">${fmtMoney(s.totalPaid)}</div></div>
+          <div class="stat-card"><div class="s-label">Total due so far</div><div class="s-value">${fmtMoney(s.totalDue)}</div></div>
+          <div class="stat-card ${cls}"><div class="s-label">Status</div><div class="s-value">${label}</div></div>
+        </div>
+        <span class="pay-detail-toggle" data-toggle="${emp.id}">${open?'Hide month-by-month ▲':'Show month-by-month ▼'}</span>
+        ${open?monthTable:''}
+      </div>`;
+    }).join('');
+    return `
+      <div class="pay-asof">
+        <span>📅 As of</span>
+        <input type="date" id="${containerId}-asof" value="${isoToday(state.asOfDate)}">
+        <span class="pay-asof-note">Months before this one count as due — change the date to preview next month.</span>
+      </div>
+      ${cards}
+    `;
+  }
+
+  function renderAdd(){
+    if(state.employees.length===0){
+      return `<div class="card plain owner-lockscreen"><div class="lock-title">No employees yet</div><div class="lock-sub">Add someone in the Employees tab first.</div></div>`;
+    }
+    const options = `<option value="" disabled selected>Select employee</option>` +
+      state.employees.map(e=>`<option value="${e.id}">${escapeHtml(e.name)}</option>`).join('');
+      return `
+      <div class="card form-card">
+        <div class="section-title">Log a payment</div>
+        <div class="field-grid">
+          <div class="field"><label>Employee</label><select id="${containerId}-p-emp">${options}</select></div>
+          <div class="field"><label>Amount</label><div class="field-input-wrap"><input type="number" id="${containerId}-p-amt" placeholder="0" min="1"><span class="unit">₹</span></div></div>
+          <div class="field"><label>Date</label><input type="date" id="${containerId}-p-date" value="${isoToday()}"></div>
+          <div class="field"><label>Note (optional)</label><input type="text" id="${containerId}-p-note" placeholder="e.g. advance"></div>
+        </div>
+        <button class="today-btn" id="${containerId}-p-submit" style="margin-top:14px;">Save payment</button>
+      </div>
+    `;
+  }
+
+  function renderHistory(){
+    if(state.employees.length===0){
+      return `<div class="card plain owner-lockscreen"><div class="lock-title">No employees yet</div><div class="lock-sub">Add someone in the Employees tab first.</div></div>`;
+    }
+    if(!state.historyEmpId) state.historyEmpId = state.employees[0].id;
+    const options = state.employees.map(e=>`<option value="${e.id}" ${e.id===state.historyEmpId?'selected':''}>${escapeHtml(e.name)}</option>`).join('');
+    const rows = state.payments.filter(p=>p.emp_id===state.historyEmpId).sort((a,b)=> b.date.localeCompare(a.date));
+    const total = rows.reduce((s,p)=>s+num(p.amount),0);
+    const tableHtml = rows.length===0
+      ? `<div class="lock-sub" style="margin-top:14px;">No payments logged yet.</div>`
+      : `<table class="pay-history-table">
+          <tr><th>Date</th><th>Amount</th><th>Note</th><th></th></tr>
+          ${rows.map(p=>`<tr>
+            <td>${p.date}</td><td>${fmtMoney(p.amount)}</td><td>${escapeHtml(p.note||'—')}</td>
+            <td><button class="pay-del-btn" data-del-payment="${p.id}">Delete</button></td>
+          </tr>`).join('')}
+        </table>
+        <div class="stat-row" style="margin-top:12px;"><span class="lbl">Total paid</span><span class="val">${fmtMoney(total)}</span></div>`;
+    return `
+      <div class="card form-card">
+        <div class="section-title">Payment history</div>
+        <div class="field" style="max-width:280px;"><label>Employee</label><select id="${containerId}-h-emp">${options}</select></div>
+        ${tableHtml}
+      </div>
+    `;
+  }
+
+  function renderEmployees(){
+    const list = state.employees.length===0
+      ? `<div class="lock-sub">No employees yet — add your first one below.</div>`
+      : `<ul class="pay-emp-list">${state.employees.map(e=>`
+          <li><div><div class="name">${escapeHtml(e.name)}</div><div class="meta">${fmtMoney(e.salary)}/month</div></div>
+          <button class="pay-del-btn" data-del-emp="${e.id}">Remove</button></li>`).join('')}</ul>`;
+    return `
+      <div class="card form-card">
+        <div class="section-title">Employees</div>
+        ${list}
+      </div>
+      <div class="card form-card" style="margin-top:14px;">
+        <div class="section-title">Add employee</div>
+        <div class="field-grid">
+          <div class="field"><label>Name</label><input type="text" id="${containerId}-e-name" placeholder="e.g. Karthik S"></div>
+          <div class="field"><label>Fixed monthly salary</label><div class="field-input-wrap"><input type="number" id="${containerId}-e-salary" placeholder="0" min="1"><span class="unit">₹</span></div></div>
+        </div>
+        <button class="today-btn" id="${containerId}-e-submit" style="margin-top:14px;">Add employee</button>
+      </div>
+    `;
+  }
+
+  function attach(){
+    container.querySelectorAll('.pay-tabs button').forEach(b=>{
+      b.addEventListener('click', ()=>{ state.sub = b.dataset.sub; render(); });
+    });
+    const asof = document.getElementById(`${containerId}-asof`);
+    if(asof) asof.addEventListener('change', e=>{ if(e.target.value){ state.asOfDate = new Date(e.target.value+'T00:00:00'); render(); } });
+
+    container.querySelectorAll('[data-toggle]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const id = el.dataset.toggle;
+        if(state.openMonth.has(id)) state.openMonth.delete(id); else state.openMonth.add(id);
+        render();
+      });
+    });
+
+    const pSubmit = document.getElementById(`${containerId}-p-submit`);
+    if(pSubmit) pSubmit.addEventListener('click', async ()=>{
+      const empVal = document.getElementById(`${containerId}-p-emp`).value;
+      const emp_id = Number(empVal);
+      const amount = num(document.getElementById(`${containerId}-p-amt`).value);
+      const date = document.getElementById(`${containerId}-p-date`).value;
+      const note = document.getElementById(`${containerId}-p-note`).value;
+      if(!empVal){ showToast('Select an employee'); return; }
+      if(!amount || amount<=0){ showToast('Enter a valid amount'); return; }
+      if(!date){ showToast('Pick a date'); return; }
+      try{
+        await api('/api/payments', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({emp_id, amount, date, note}) });
+        showToast('Payment saved ✓');
+        await loadAll();
+        state.sub = 'add'; render();
+      }catch(e){ showToast('Could not save payment'); }
+    });
+
+    const histSel = document.getElementById(`${containerId}-h-emp`);
+    if(histSel) histSel.addEventListener('change', e=>{ state.historyEmpId = e.target.value; render(); });
+
+    container.querySelectorAll('[data-del-payment]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        if(!confirm('Delete this payment?')) return;
+        try{ await api(`/api/payments/${btn.dataset.delPayment}`, { method:'DELETE' }); showToast('Payment deleted'); await loadAll(); render(); }
+        catch(e){ showToast('Could not delete'); }
+      });
+    });
+
+    const eSubmit = document.getElementById(`${containerId}-e-submit`);
+    if(eSubmit) eSubmit.addEventListener('click', async ()=>{
+      const name = document.getElementById(`${containerId}-e-name`).value.trim();
+      const salary = num(document.getElementById(`${containerId}-e-salary`).value);
+      if(!name || !salary){ showToast('Fill in name and salary'); return; }
+      try{
+        await api('/api/employees', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name, salary}) });
+        showToast('Employee added ✓');
+        await loadAll(); render();
+      }catch(e){ showToast('Could not add employee'); }
+    });
+
+    container.querySelectorAll('[data-del-emp]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        if(!confirm('Remove this employee? Their payment history will be deleted too.')) return;
+        try{ await api(`/api/employees/${btn.dataset.delEmp}`, { method:'DELETE' }); showToast('Employee removed'); await loadAll(); render(); }
+        catch(e){ showToast('Could not remove'); }
+      });
+    });
+  }
+
+  loadAll();
+}
+
+initPaymentView('app-payment');

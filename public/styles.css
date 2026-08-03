@@ -229,7 +229,7 @@ h1{font-family:'Playfair Display',serif; font-weight:700; font-size:26px; letter
 .field{display:flex; flex-direction:column; gap:5px;}
 .field label{font-size:12.5px; color:var(--ink-soft); font-weight:500;}
 .field-input-wrap{position:relative;}
-.field input{
+.field input {
   width:100%; padding:10px 12px; border:1px solid var(--line-strong); border-radius:9px;
   font-family:'IBM Plex Mono',monospace; font-size:14px; background:#FFFDF9; color:var(--ink);
 }
@@ -302,3 +302,75 @@ td.cell-empty{color:var(--steel);}
   h1{font-size:20px;}
   .day-header{flex-direction:column; align-items:flex-start;}
 }
+
+
+/* ---------- Payment tab ---------- */
+
+/* Stop Payment view from inheriting the Food Truck/JP Nagar 2-col sidebar grid */
+#view-payment .app{
+  display:block;
+}
+
+.pay-tabs{
+  display:flex;
+  align-items:flex-start;     /* stop buttons stretching to full row height */
+  align-content:flex-start;   /* stop wrapped rows stretching */
+  gap:8px;
+  flex-wrap:wrap;
+  margin-bottom:16px;
+}
+.pay-tabs button{
+  align-self:flex-start;
+  flex:0 0 auto;               /* don't grow/stretch to fill space */
+  font-family:'Oswald',sans-serif; font-size:12.5px; font-weight:600; letter-spacing:.03em;
+  padding:8px 14px; border-radius:8px; border:1px solid var(--line-strong);
+  background:var(--card); color:var(--ink-soft); cursor:pointer;
+}
+.pay-tabs button.active{ background:var(--owner); border-color:var(--owner); color:#fff; }
+.pay-asof{
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  background:var(--saffron-bg); border:1px solid #d9c073; border-radius:10px;
+  padding:10px 14px; margin-bottom:16px; font-size:12.5px;
+}
+
+/* Make the Employee <select> match the .field-input-wrap text inputs */
+.field select{
+  width:100%;
+  padding:10px 12px;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:13px;
+  color:var(--ink);
+  background:var(--card, #fff);
+  border:1px solid var(--line-strong);
+  border-radius:8px;
+  box-sizing:border-box;
+  appearance:none;
+  -webkit-appearance:none;
+  cursor:pointer;
+}
+.field select:focus{
+  outline:none;
+  border-color:var(--owner);
+}
+
+
+.pay-asof input{ padding:5px 8px; font-size:13px; border-radius:6px; border:1px solid var(--line-strong); }
+.pay-asof-note{ color:var(--ink-soft); }
+.emp-card{ padding:16px 18px; margin-bottom:14px; }
+.emp-card-top .emp-name{ font-family:'Oswald',sans-serif; font-weight:600; font-size:16px; }
+.emp-card-top .emp-sub{ font-size:12px; color:var(--ink-soft); font-family:'IBM Plex Mono',monospace; }
+.pay-detail-toggle{ display:inline-block; margin-top:10px; font-size:11.5px; color:var(--turmeric-deep); text-decoration:underline; cursor:pointer; }
+.pay-month-grid{ width:100%; border-collapse:collapse; margin-top:10px; font-size:11px; }
+.pay-month-grid th{ font-family:'IBM Plex Mono',monospace; font-weight:600; color:var(--ink-soft); padding:3px; }
+.pay-month-grid td{ text-align:center; padding:3px; font-family:'IBM Plex Mono',monospace; }
+.pay-month-grid td.due{ color:var(--steel); }
+.pay-month-grid td.ok{ color:var(--curry); font-weight:600; }
+.pay-month-grid td.pending{ color:#7A1F14; font-weight:700; }
+.pay-history-table{ width:100%; border-collapse:collapse; margin-top:14px; font-size:13px; }
+.pay-history-table th{ text-align:left; font-size:11px; text-transform:uppercase; color:var(--ink-soft); padding:6px; border-bottom:2px solid var(--ink); }
+.pay-history-table td{ padding:8px 6px; border-bottom:1px solid var(--line); font-family:'IBM Plex Mono',monospace; }
+.pay-del-btn{ font-size:11.5px; color:var(--chili); background:none; border:1px solid var(--chili); border-radius:6px; padding:4px 10px; cursor:pointer; }
+.pay-emp-list{ list-style:none; margin:0; padding:0; }
+.pay-emp-list li{ display:flex; justify-content:space-between; align-items:center; padding:10px 2px; border-bottom:1px solid var(--line); }
+.pay-emp-list li .name{ font-weight:600; }
+.pay-emp-list li .meta{ font-size:12px; color:var(--ink-soft); font-family:'IBM Plex Mono',monospace; }
