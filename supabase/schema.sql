@@ -43,6 +43,28 @@ CREATE TABLE IF NOT EXISTS items_used (
 
 CREATE INDEX IF NOT EXISTS idx_entries_outlet_date ON entries (outlet, date);
 
+-- Payment / Salary Ledger (public/payment) — not in the original SQLite
+-- schema this file mirrors; added here so a fresh Supabase project has
+-- everything server.js's /api/employees and /api/payments routes need.
+CREATE TABLE IF NOT EXISTS employees (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  salary NUMERIC NOT NULL DEFAULT 0,   -- fixed monthly salary
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+  id BIGSERIAL PRIMARY KEY,
+  emp_id BIGINT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  amount NUMERIC NOT NULL,
+  date TEXT NOT NULL,             -- 'YYYY-MM-DD'
+  note TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_payments_emp_id ON payments (emp_id);
+CREATE INDEX IF NOT EXISTS idx_payments_date ON payments (date);
+
 -- Supabase enables Row Level Security by default on tables created through
 -- its dashboard, but tables created via raw SQL (like this) do NOT have RLS
 -- on unless you turn it on. Since this app connects with the full

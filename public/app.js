@@ -19,64 +19,7 @@ async function api(path, opts){
   return res.json();
 }
 
-// ===========================================================================
-// Owner auth — a single shared password gate. Workers (no password) can only
-// add/edit today's date; the owner unlocks past dates plus the Amount/Report
-// tabs by entering the password once (kept for the browser tab's session).
-// ===========================================================================
-const AUTH = { password: sessionStorage.getItem('ownerPassword') || null };
-function isUnlocked(){ return !!AUTH.password; }
-function authHeaders(){ return AUTH.password ? { 'X-Owner-Password': AUTH.password } : {}; }
-function isTodayCell(y, m, d){
-  const now = new Date();
-  return now.getFullYear()===y && (now.getMonth()+1)===m && now.getDate()===d;
-}
-
-async function verifyOwnerPassword(pw){
-  const res = await fetch('/api/owner-unlock', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ password: pw }) });
-  return res.ok;
-}
-function refreshOwnerUI(){
-  const btn = document.getElementById('ownerLockBtn');
-  if(!btn) return;
-  if(isUnlocked()){ btn.textContent = '🔓 Owner (unlocked) — tap to lock'; btn.classList.add('unlocked'); }
-  else { btn.textContent = '🔒 Owner Login'; btn.classList.remove('unlocked'); }
-}
-function openOwnerModal(){
-  document.getElementById('ownerModalBackdrop').classList.add('show');
-  document.getElementById('ownerModalError').textContent = '';
-  const input = document.getElementById('ownerPasswordInput');
-  input.value = '';
-  input.focus();
-}
-function closeOwnerModal(){ document.getElementById('ownerModalBackdrop').classList.remove('show'); }
-async function submitOwnerPassword(){
-  const pw = document.getElementById('ownerPasswordInput').value;
-  const ok = await verifyOwnerPassword(pw);
-  if(!ok){ document.getElementById('ownerModalError').textContent = 'Wrong password.'; return; }
-  AUTH.password = pw;
-  sessionStorage.setItem('ownerPassword', pw);
-  closeOwnerModal();
-  location.reload(); // simplest way to make every already-built view pick up the unlocked state
-}
-function lockOwner(){
-  AUTH.password = null;
-  sessionStorage.removeItem('ownerPassword');
-  location.reload();
-}
-
-const ownerLockBtn = document.getElementById('ownerLockBtn');
-if(ownerLockBtn) ownerLockBtn.addEventListener('click', () => {
-  if(isUnlocked()){ if(confirm('Lock owner access again?')) lockOwner(); return; }
-  openOwnerModal();
-});
-const ownerModalCancel = document.getElementById('ownerModalCancel');
-if(ownerModalCancel) ownerModalCancel.addEventListener('click', closeOwnerModal);
-const ownerModalSubmit = document.getElementById('ownerModalSubmit');
-if(ownerModalSubmit) ownerModalSubmit.addEventListener('click', submitOwnerPassword);
-const ownerPasswordInput = document.getElementById('ownerPasswordInput');
-if(ownerPasswordInput) ownerPasswordInput.addEventListener('keydown', (e) => { if(e.key==='Enter') submitOwnerPassword(); });
-refreshOwnerUI();
+// Auth (AUTH/roles/login modal) now lives in layout.js, loaded before this file.
 
 function showToast(msg){
   const toast = document.getElementById('toast');
@@ -168,6 +111,7 @@ function itemsDayStatus(map, day){ return hasAnyItems(map, day) ? 'good' : 'empt
 
 function initEntryView(containerId, cfg){
   const container = document.getElementById(containerId);
+  if(!container) return; // this page doesn't render this view
   container.innerHTML = `
     <div class="sidebar">
       <div class="card cal-card">
@@ -309,15 +253,15 @@ function initEntryView(containerId, cfg){
       if(status !== 'empty') classes.push('filled', 'status-'+status);
       if(day === state.day) classes.push('selected');
       if(isCurMonth && day === now.getDate()) classes.push('today');
-      if(!isUnlocked() && !isTodayCell(state.year, state.month, day)) classes.push('locked');
+      if(!canEditDates() && !isTodayCell(state.year, state.month, day)) classes.push('locked');
       html += `<div class="${classes.join(' ')}" data-day="${day}">${day}</div>`;
     }
     grid.innerHTML = html;
     grid.querySelectorAll('.cal-day[data-day]').forEach(el => {
       el.addEventListener('click', () => {
         const day = parseInt(el.dataset.day,10);
-        if(!isUnlocked() && !isTodayCell(state.year, state.month, day)){
-          showToast('🔒 Owner password needed to view other dates');
+        if(!canEditDates() && !isTodayCell(state.year, state.month, day)){
+          showToast('🔒 Sign in to change the date');
           return;
         }
         state.day = day; renderCalendar(); renderDayForm();
@@ -342,7 +286,7 @@ function initEntryView(containerId, cfg){
   }
 
   async function changeMonth(delta){
-    if(!isUnlocked()){ showToast('🔒 Owner password needed to view other dates'); return; }
+    if(!canEditDates()){ showToast('🔒 Sign in to change the date'); return; }
     state.month += delta;
     if(state.month < 1){ state.month = 12; state.year--; }
     if(state.month > 12){ state.month = 1; state.year++; }
@@ -351,7 +295,7 @@ function initEntryView(containerId, cfg){
     await loadMonth();
   }
   async function changeDay(delta){
-    if(!isUnlocked()){ showToast('🔒 Owner password needed to view other dates'); return; }
+    if(!canEditDates()){ showToast('🔒 Sign in to change the date'); return; }
     const nDays = daysInMonth(state.year, state.month);
     let d = state.day + delta;
     if(d < 1){ await changeMonth(-1); state.day = daysInMonth(state.year, state.month); renderCalendar(); renderDayForm(); return; }
@@ -370,13 +314,20 @@ function initEntryView(containerId, cfg){
     const statusEl = document.getElementById(`${containerId}-mailStatus`);
     const pad2 = n => String(n).padStart(2,'0');
     const dateStr = `${state.year}-${pad2(state.month)}-${pad2(state.day)}`;
-    if(!confirm(`Send the daily report email for ${dateStr}?`)) return;
+    if(!confirm(`Send the daily report + weekly comparison email for ${dateStr}?`)) return;
     btn.disabled = true; btn.textContent = 'Sending…';
     statusEl.style.display = 'block'; statusEl.textContent = 'Sending report email…';
     try{
-      const res = await api(`/api/send-report-email/${dateStr}`, { method:'POST' });
-      statusEl.textContent = `Report email sent for ${dateStr} ✓`;
-      showToast('Report email sent ✓');
+      await api(`/api/send-report-email/${dateStr}`, { method:'POST' });
+      statusEl.textContent = 'Report sent — sending weekly comparison…';
+      try{
+        await api(`/api/send-comparison-email/${dateStr}`, { method:'POST' });
+        statusEl.textContent = `Report + weekly comparison sent for ${dateStr} ✓`;
+        showToast('Report + comparison sent ✓');
+      }catch(e2){
+        statusEl.textContent = `Report sent, but comparison email failed: ${e2.message}`;
+        showToast('Report sent, comparison failed');
+      }
     }catch(e){
       statusEl.textContent = `Failed to send report email: ${e.message}`;
       showToast('Failed to send report email');
@@ -530,19 +481,69 @@ function computeReportDay(data, day){
   };
 }
 
+// ---- Report tab: date-range summary panel (sums + averages across a range) ----
+function setupRangeReport(containerId){
+  const fromEl = document.getElementById(`${containerId}-rangeFrom`);
+  const toEl = document.getElementById(`${containerId}-rangeTo`);
+  const goBtn = document.getElementById(`${containerId}-rangeGo`);
+  const errEl = document.getElementById(`${containerId}-rangeError`);
+  const statsEl = document.getElementById(`${containerId}-rangeStats`);
+
+  // Default to the current month so far.
+  const now = new Date();
+  const firstOfMonth = `${now.getFullYear()}-${pad2(now.getMonth()+1)}-01`;
+  const today = `${now.getFullYear()}-${pad2(now.getMonth()+1)}-${pad2(now.getDate())}`;
+  fromEl.value = firstOfMonth;
+  toEl.value = today;
+
+  const RANGE_CARDS = [
+    ['jpSale', 'JP Nagar Sale', 'money'], ['truckSale', 'Truck Sale', 'money'], ['totalSale', 'Total Sale', 'money'],
+    ['jpDiff', 'JP Nagar Difference', 'money'], ['truckDiff', 'Truck Difference', 'money'], ['totalDiff', 'Total Difference', 'money'],
+    ['chickenPlateDiffAll', 'Chicken Plate Diff', 'num'], ['ricePlateDiffAll', 'Rice Plate Diff', 'num'],
+    ['chickenReadyRatio', 'Chicken Ready Ratio (avg)', 'ratio'], ['chickenSaleRatio', 'Chicken Sale Ratio (avg)', 'ratio'],
+    ['chickenSaleWasteRatio', 'Chicken Sale+Waste Ratio (avg)', 'ratio'], ['riceReadyRatio', 'Rice Ready Ratio (avg)', 'ratio'],
+    ['riceSaleRatio', 'Rice Sale Ratio (avg)', 'ratio'], ['riceSaleWasteRatio', 'Rice Sale+Waste Ratio (avg)', 'ratio'],
+  ];
+
+  async function generate(){
+    errEl.textContent = '';
+    statsEl.innerHTML = '';
+    const from = fromEl.value, to = toEl.value;
+    if(!from || !to){ errEl.textContent = 'Pick both a From and To date.'; return; }
+    if(from > to){ errEl.textContent = 'From date must be on or before the To date.'; return; }
+    goBtn.disabled = true; goBtn.textContent = 'Generating…';
+    try{
+      const result = await api(`/api/report/range/${from}/${to}`);
+      const t = result.totals;
+      const fmt = (kind, v) => kind === 'money' ? fmtMoney(v || 0) : (kind === 'ratio' ? fmtRatio(v) : Math.round(v || 0));
+      statsEl.innerHTML = RANGE_CARDS.map(([key,label,kind]) =>
+        `<div class="stat-card"><div class="s-label">${label}</div><div class="s-value">${fmt(kind, t[key])}</div></div>`
+      ).join('') + `<div class="stat-card"><div class="s-label">Days with data</div><div class="s-value">${t.daysWithData}/${t.daysInRange}</div></div>`;
+    }catch(e){
+      errEl.textContent = 'Could not generate report: ' + e.message;
+    }finally{
+      goBtn.disabled = false; goBtn.textContent = 'Generate';
+    }
+  }
+
+  goBtn.addEventListener('click', generate);
+  generate(); // show the current month's numbers immediately
+}
+
 function initOwnerDayView(containerId, cfg){
   const container = document.getElementById(containerId);
+  if(!container) return; // this page doesn't render this view
 
-  if(!isUnlocked()){
+  if(!isOwner()){
     container.innerHTML = `
       <div class="card plain owner-lockscreen" style="grid-column:1/-1;">
         <div class="lock-icon">🔒</div>
         <div class="lock-title">${cfg.lockLabel} is owner-only</div>
-        <div class="lock-sub">Enter the owner password to view ${cfg.lockLabel.toLowerCase()} for any date.</div>
-        <button class="today-btn" id="${containerId}-unlockBtn">Enter password</button>
+        <div class="lock-sub">Enter the OWNER password to view ${cfg.lockLabel.toLowerCase()} for any date.</div>
+        <button class="today-btn" id="${containerId}-unlockBtn">Enter owner password</button>
       </div>
     `;
-    document.getElementById(`${containerId}-unlockBtn`).addEventListener('click', openOwnerModal);
+    document.getElementById(`${containerId}-unlockBtn`).addEventListener('click', openLoginModal);
     return;
   }
 
@@ -575,6 +576,22 @@ function initOwnerDayView(containerId, cfg){
         <div class="results-title">${cfg.resultsTitle}</div>
         <div class="stat-grid" id="${containerId}-stats"></div>
       </div>
+      ${cfg.rangeReport ? `
+      <div class="card results-card" id="${containerId}-rangeCard">
+        <div class="results-title">Generate report for a date range</div>
+        <div class="range-controls">
+          <label>From <input type="date" id="${containerId}-rangeFrom"></label>
+          <label>To <input type="date" id="${containerId}-rangeTo"></label>
+          <button class="today-btn" id="${containerId}-rangeGo">Generate</button>
+        </div>
+        <div class="range-error" id="${containerId}-rangeError"></div>
+        <div class="stat-grid" id="${containerId}-rangeStats" style="margin-top:10px;"></div>
+      </div>` : ''}
+      ${cfg.weeklyComparison ? `
+      <div class="card results-card" id="${containerId}-weekCompareCard">
+        <div class="results-title">This <span id="${containerId}-weekCompareLabel">weekday</span> vs last week</div>
+        <div class="stat-grid" id="${containerId}-weekCompareStats"></div>
+      </div>` : ''}
       <details class="info-line">
         <summary>How these numbers are calculated</summary>
         ${cfg.infoText}
@@ -585,6 +602,8 @@ function initOwnerDayView(containerId, cfg){
   const state = { year:0, month:0, day:0, data:{truck:{}, jp:{}, itemsUsed:{}} };
   const now = new Date();
   state.year = now.getFullYear(); state.month = now.getMonth()+1; state.day = now.getDate();
+
+  if(cfg.rangeReport) setupRangeReport(containerId);
 
   async function loadMonth(){
     try{ state.data = await api(`/api/owner-view/${state.year}/${state.month}`); }
@@ -603,7 +622,46 @@ function initOwnerDayView(containerId, cfg){
       return;
     }
     grid.innerHTML = cfg.renderDayCards(result);
+    if(cfg.weeklyComparison) renderWeekCompare();
   }
+
+  async function renderWeekCompare(){
+    const pad2 = n => String(n).padStart(2,'0');
+    const dateStr = `${state.year}-${pad2(state.month)}-${pad2(state.day)}`;
+    const d = new Date(state.year, state.month-1, state.day);
+    const weekday = d.toLocaleDateString('en-IN', {weekday:'long'});
+    const labelEl = document.getElementById(`${containerId}-weekCompareLabel`);
+    const statsEl = document.getElementById(`${containerId}-weekCompareStats`);
+    if(!statsEl) return;
+    labelEl.textContent = weekday;
+    statsEl.innerHTML = `<div class="stat-card"><div class="s-label">Loading…</div></div>`;
+    try{
+      const comp = await api(`/api/report/weekly-comparison/${dateStr}`);
+      const cur = comp.current, prev = comp.previous;
+
+      const cardsFor = (r) => [
+        ['JP Nagar Sale', r.report.jpSale],
+        ['Truck Sale', r.report.truckSale],
+        ['Total Sale', r.report.totalSale],
+        ['JP Nagar Difference', r.report.jpDiff],
+        ['Truck Difference', r.report.truckDiff],
+        ['Total Difference', r.report.totalDiff],
+      ].map(([label,val]) =>
+        `<div class="stat-card"><div class="s-label">${label}</div><div class="s-value">${fmtMoney(val)}</div></div>`
+      ).join('');
+
+      statsEl.innerHTML = `
+        <div class="results-title" style="font-size:13px;margin-top:4px;">This ${weekday} (${cur.date})</div>
+        <div class="stat-grid">${cardsFor(cur)}</div>
+        <div class="results-title" style="font-size:13px;margin-top:16px;">Last ${weekday} (${prev.date})</div>
+        <div class="stat-grid">${cardsFor(prev)}</div>
+      `;
+    }catch(e){
+      statsEl.innerHTML = `<div class="stat-card"><div class="s-label">Couldn't load comparison</div><div class="s-value" style="font-size:13px;color:var(--steel);">${e.message}</div></div>`;
+    }
+  }
+
+
 
   function renderCalendar(){
     document.getElementById(`${containerId}-calTitle`).textContent = `${monthNames[state.month-1]} ${state.year}`;
@@ -708,6 +766,8 @@ initOwnerDayView('app-report', {
   lockLabel: 'Report',
   subtitle: 'Combined performance — Food Truck + JP Nagar',
   resultsTitle: "This day's combined report",
+  rangeReport: true,
+  weeklyComparison: true,
   computeDay: computeReportDay,
   dayStatus: (data, day) => {
     const r = computeReportDay(data, day);
@@ -763,18 +823,6 @@ initOwnerDayView('app-report', {
 
 
 // ===========================================================================
-// Top-level nav switching
-// ===========================================================================
-document.querySelectorAll('.nav-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b===btn));
-    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-    document.getElementById(`view-${btn.dataset.view}`).classList.add('active');
-  });
-});
-
-
-// ===========================================================================
 // Payment tab — employees + ad-hoc salary payments (owner-only, like Amount/Report)
 // ===========================================================================
 function monthlyDueArray(fixedSalary, asOfDate){
@@ -803,17 +851,18 @@ function empSalaryStatus(emp, payments, asOfDate){
 
 function initPaymentView(containerId){
   const container = document.getElementById(containerId);
+  if(!container) return; // this page doesn't render this view
 
-  if(!isUnlocked()){
+  if(!isOwner()){
     container.innerHTML = `
       <div class="card plain owner-lockscreen" style="grid-column:1/-1;">
         <div class="lock-icon">🔒</div>
         <div class="lock-title">Payment is owner-only</div>
-        <div class="lock-sub">Enter the owner password to log salary payments and see who's owed what.</div>
-        <button class="today-btn" id="${containerId}-unlockBtn">Enter password</button>
+        <div class="lock-sub">Enter the OWNER password to log salary payments and see who's owed what.</div>
+        <button class="today-btn" id="${containerId}-unlockBtn">Enter owner password</button>
       </div>
     `;
-    document.getElementById(`${containerId}-unlockBtn`).addEventListener('click', openOwnerModal);
+    document.getElementById(`${containerId}-unlockBtn`).addEventListener('click', openLoginModal);
     return;
   }
 

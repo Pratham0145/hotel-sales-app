@@ -157,31 +157,56 @@ by 2am that day's entries are complete and ready to report on.
 - `lib/scheduler.js` — the node-cron job that fires at 2 AM IST
 - One new route in `server.js`: `POST /api/send-report-email/:date` for manual testing
 
-## Owner password (locking past dates & reports)
+## Pages (one URL per section)
 
-By default (no password set), everyone can do everything — nothing is restricted.
-Set `OWNER_PASSWORD` in `.env` to turn on:
+Every section is its own page and its own URL — navigate straight to it:
 
-- **Food Truck / JP Nagar / Items Used** — workers can only add/edit **today's**
-  date. The calendar still shows past days' colors, but clicking one (or the
-  month/day arrows) shows "🔒 Owner password needed" instead of opening it.
-- **Amount / Report** — entirely hidden behind a password screen, for anyone,
-  until unlocked.
+| URL | Page | Who can open it |
+| --- | --- | --- |
+| `http://localhost:5000/` | redirects to `/FoodTruck` | anyone |
+| `http://localhost:5000/FoodTruck` | Food Truck daily entry | anyone (worker+ to change the date) |
+| `http://localhost:5000/JPNagar` | JP Nagar daily entry | anyone (worker+ to change the date) |
+| `http://localhost:5000/Items` | Items Used | anyone (worker+ to change the date) |
+| `http://localhost:5000/Amount` | Amount | owner only |
+| `http://localhost:5000/Report` | Report + date-range report | owner only |
+| `http://localhost:5000/Payment` | Salary / payments | owner only |
+| `http://localhost:5000/Login` | Sign in | anyone |
+
+URLs are matched case-insensitively and redirected to the canonical spelling,
+so `/report` bounces to `/Report`. A few aliases exist too: `/truck`, `/jp`,
+`/items-used`, `/owner`.
+
+The left **sidebar** groups these into **Outlets** (Food Truck, JP Nagar, Items
+Used) and **Owner Access** (Amount, Report, Payment). The Owner Access group is
+hidden completely unless you are signed in as the owner.
+
+## Passwords & access (worker vs owner)
+
+Two passwords in `.env`:
 
 ```
-OWNER_PASSWORD=choose-a-password
+WORKER_PASSWORD=choose-a-worker-password
+OWNER_PASSWORD=choose-an-owner-password
 ```
 
-Click **🔒 Owner Login** (top right of the page) and enter it to unlock — this
-unlocks all of the above at once, for that browser tab, until you tap **🔓
-Owner (unlocked)** again to lock it back up (or close the tab).
+- **Worker password** — opens Food Truck / JP Nagar / Items Used and lets the
+  worker **change the date** they are writing to (past days, month arrows).
+  Amount, Report and Payment stay hidden.
+- **Owner password** — everything a worker can do, plus **Amount**, **Report**
+  (including *Generate report for a date range*) and **Payment**.
+- If **neither** password is set the app is wide open, so a fresh install never
+  locks you out before you have configured it.
+- With passwords set but nobody signed in, entry pages still work for **today's**
+  date only.
 
-This is a single shared password (not per-person logins), checked both in the
-browser and on the server — so someone can't bypass it by calling the API
-directly either. It's meant to stop casual edits to old data and to keep
-Amount/Report for the owner's eyes, not to be bank-grade security; if you're
-running this on the open internet rather than a private network, using HTTPS
-(which Railway/Render give you automatically) is worth having regardless.
+Sign in at `/Login`, or with the button at the top right of any page. The
+password is kept for that browser tab (sessionStorage) until you sign out or
+close the tab. It is checked in the browser *and* on the server (sent as the
+`X-App-Password` header), so the API can't be bypassed by calling it directly.
+It is a shared password, not per-person logins — meant to stop casual edits and
+keep the money views for the owner, not bank-grade security. Use HTTPS if this
+runs on the open internet.
+
 
 ## How the numbers are calculated
 
@@ -225,9 +250,34 @@ running this on the open internet rather than a private network, using HTTPS
    (Truck RICE SALE + Truck Chicken Wastage + Truck Paneer Wastage)) ÷ Rice Used`.
    If you had a different formula in mind, tell me and I'll change it.
 
+## Deep-link pages for each tab
+
+`/payment/` works today because it's a real folder (`public/payment/`) with
+its own `index.html` — `express.static` serves it automatically and even
+redirects `/payment` → `/payment/` on its own, with zero custom route code.
+
+The same works for any other tab (Food Truck, JP Nagar, Items Used, Amount,
+Report) the moment a matching folder exists — e.g. add
+`public/truck/index.html` and `/truck` / `/truck/` just work, identically to
+Payment, automatically. No server changes needed for that part.
+
+## Report — date range summary
+
+The Report tab has a "Generate report for a date range" panel: pick a
+From/To date and it fetches `GET /api/report/range/:start/:end` (owner-only,
+max 92 days) and shows, summed/averaged across every day in that range that
+has data:
+- **Sums:** JP Nagar Sale, Truck Sale, Total Sale, JP Nagar Difference, Truck
+  Difference, Total Difference, Chicken Plate Diff, Rice Plate Diff
+- **Averages:** Chicken Ready/Sale/Sale+Waste Ratio, Rice Ready/Sale/Sale+Waste Ratio
+
+Same formulas as the single-day Report view (`lib/dailyReport.js`) — just
+summed/averaged across the chosen dates instead of shown for one day.
+
 ## Extending it later
 
-The database has two tables — `entries` (outlet, date, and all manual counts) and
-`items_used` (date, and combined kitchen usage). Both are plain SQLite, so you (or
-any developer) can query them directly with any SQLite tool if you want custom
+The database has these tables — `entries` (outlet, date, and all manual counts),
+`items_used` (date, and combined kitchen usage), `employees`, and `payments`
+(salary ledger). All live in the same Supabase Postgres database (see
+`supabase/schema.sql`), so you (or any developer) can query them for custom
 reports beyond what's in the Report tab.
