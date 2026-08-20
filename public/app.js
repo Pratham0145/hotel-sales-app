@@ -642,19 +642,21 @@ function initOwnerDayView(containerId, cfg){
       const cardsFor = (r) => [
         ['JP Nagar Sale', r.report.jpSale],
         ['Truck Sale', r.report.truckSale],
-        ['Total Sale', r.report.totalSale],
-        ['JP Nagar Difference', r.report.jpDiff],
-        ['Truck Difference', r.report.truckDiff],
-        ['Total Difference', r.report.totalDiff],
       ].map(([label,val]) =>
         `<div class="stat-card"><div class="s-label">${label}</div><div class="s-value">${fmtMoney(val)}</div></div>`
       ).join('');
 
       statsEl.innerHTML = `
-        <div class="results-title" style="font-size:13px;margin-top:4px;">This ${weekday} (${cur.date})</div>
-        <div class="stat-grid">${cardsFor(cur)}</div>
-        <div class="results-title" style="font-size:13px;margin-top:16px;">Last ${weekday} (${prev.date})</div>
-        <div class="stat-grid">${cardsFor(prev)}</div>
+        <div class="week-compare-cols">
+          <div>
+            <div class="results-title" style="font-size:13px;">This ${weekday} (${cur.date})</div>
+            <div class="stat-grid">${cardsFor(cur)}</div>
+          </div>
+          <div>
+            <div class="results-title" style="font-size:13px;">Last ${weekday} (${prev.date})</div>
+            <div class="stat-grid">${cardsFor(prev)}</div>
+          </div>
+        </div>
       `;
     }catch(e){
       statsEl.innerHTML = `<div class="stat-card"><div class="s-label">Couldn't load comparison</div><div class="s-value" style="font-size:13px;color:var(--steel);">${e.message}</div></div>`;
