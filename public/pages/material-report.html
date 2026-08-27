@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Material Report — The Shallot Biriyani</title>
+<link rel="icon" type="image/jpeg" href="/assets/logo-horse.jpg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Playfair+Display:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body data-page="material-report">
+
+<div class="ticket-header">
+    <div class="brand-row">
+        <div class="brand-left">
+            <img src="/assets/brand-banner.jpg" alt="The Shallot Biriyani" class="brand-logo">
+            <div class="brand-content">
+                <div class="brand-eyebrow">Kitchen Usage</div>
+                <h1>The Shallot Biriyani</h1>
+            </div>
+        </div>
+        <div class="brand-right">
+            <div class="sync-pill">
+                <span class="sync-dot" id="syncDot"></span>
+                <span id="syncText">Synced to server</span>
+            </div>
+            <button class="owner-lock-btn" id="ownerLockBtn">🔒 Sign in</button>
+            <img src="/assets/logo-horse.jpg" alt="Horse Logo" class="logo-horse">
+        </div>
+    </div>
+</div>
+
+<div class="owner-modal-backdrop" id="ownerModalBackdrop">
+  <div class="owner-modal">
+    <div class="owner-modal-title">Sign in</div>
+    <div class="owner-modal-sub">Worker password unlocks date changes on the outlet pages. Owner password unlocks Amount, Report &amp; Payment too.</div>
+    <input type="password" id="ownerPasswordInput" placeholder="Password" autocomplete="current-password">
+    <div class="owner-modal-actions">
+      <button class="cancel" id="ownerModalCancel">Cancel</button>
+      <button class="submit" id="ownerModalSubmit">Sign in</button>
+    </div>
+    <div class="owner-modal-error" id="ownerModalError"></div>
+  </div>
+</div>
+
+<div class="layout">
+  <nav class="app-nav" id="layout-nav"></nav>
+    <div class="page-head">
+      <h2 class="page-title">🧺 Material</h2>
+      <div class="page-url">localhost:5000/Material/Report</div>
+    </div>
+    <div class="subnav">
+        <a href="/Material" class="subnav-item">📅 Materials Got</a>
+        <a href="/Material/Payment" class="subnav-item">💰 Payment</a>
+        <a href="/Material/Report" class="subnav-item">📊 Report</a>
+        <a href="/Material/PaymentReport" class="subnav-item">🧾 Payment Report</a>
+        <a href="/Material/AllMaterials" class="subnav-item">📋 All Materials</a>
+    </div>
+    <div class="app" id="app-material-report"></div>
+  </main>
+</div>
+
+<div class="toast" id="toast"><span id="toastText">Saved</span></div>
+
+<script src="/layout.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

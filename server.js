@@ -33,10 +33,16 @@ const PAGES = {
   '/FoodTruck': 'foodtruck.html',
   '/JPNagar': 'jpnagar.html',
   '/Items': 'items.html',
+  '/Material': 'material.html',
+  '/Material/Payment': 'material-payment.html',
+  '/Material/AllMaterials': 'material-all.html',
+  '/Material/Report': 'material-report.html',
+  '/Material/PaymentReport': 'material-payment-report.html',
   '/Amount': 'amount.html',
   '/Report': 'report.html',
   '/Payment': 'payment.html',
 };
+
 const PAGE_ALIASES = {};
 for (const p of Object.keys(PAGES)) PAGE_ALIASES[p.toLowerCase()] = p;
 // A few friendlier spellings people type by hand.
@@ -218,6 +224,181 @@ app.put('/api/items-used/:year/:month/:day', asyncRoute(async (req, res) => {
   `, [date, merged.chicken_plates, merged.veg_plates, merged.chicken, merged.rice]);
 
   res.json({ ok: true, date, ...merged });
+}));
+
+
+
+// ---------------------------------------------------------------------------
+// Material API (master list + daily usage/received log) — its own endpoints,
+// separate from Items Used and Payments.
+// ---------------------------------------------------------------------------
+
+app.get('/api/materials', asyncRoute(async (req, res) => {
+  const { rows } = await query('SELECT * FROM materials ORDER BY sort_order, name');
+  res.json(rows);
+}));
+
+app.post('/api/materials', asyncRoute(async (req, res) => {
+  if (!canEditAnyDate(req)) return res.status(403).json({ error: 'Sign in to add materials.' });
+  const { name, track_quantity, track_amount } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
+  const trackQty = track_quantity !== false;
+  const trackAmt = track_amount !== false;
+  if (!trackQty && !trackAmt) return res.status(400).json({ error: 'Select at least Quantity or Amount' });
+    const { rows } = await query(
+    `INSERT INTO materials (name, sort_order, track_quantity, track_amount)
+     VALUES ($1, (SELECT COALESCE(MAX(sort_order),0)+1 FROM materials), $2, $3)
+     ON CONFLICT (name) DO UPDATE SET track_quantity=EXCLUDED.track_quantity, track_amount=EXCLUDED.track_amount
+     RETURNING *`,
+    [name.trim(), trackQty, trackAmt]
+  );
+  res.json(rows[0]);
+}));
+
+app.delete('/api/materials/:id', asyncRoute(async (req, res) => {
+  if (!isOwnerRequest(req)) return res.status(403).json({ error: 'Owner password required' });
+  await query('DELETE FROM materials WHERE id = $1', [req.params.id]);
+  res.json({ ok: true });
+}));
+
+
+app.put('/api/materials/:id', asyncRoute(async (req, res) => {
+  if (!canEditAnyDate(req)) return res.status(403).json({ error: 'Sign in required' });
+  const { active } = req.body;
+  const { rows } = await query('UPDATE materials SET active=$1 WHERE id=$2 RETURNING *', [active, req.params.id]);
+  res.json(rows[0]);
+}));
+
+
+// GET /api/material-entries/:year/:month -> { "25": { "3": {quantity, amount}, "7": {...} }, ... }
+// (outer key = day of month, inner key = material_id)
+app.get('/api/material-entries/:year/:month', asyncRoute(async (req, res) => {
+  const { year, month } = req.params;
+  const y = parseInt(year, 10), m = parseInt(month, 10);
+  if (!y || !m || m < 1 || m > 12) return res.status(400).json({ error: 'invalid year/month' });
+
+  const { rows } = await query(
+    `SELECT * FROM material_entries WHERE date LIKE $1 ORDER BY date`,
+    [monthPrefix(y, m) + '%']
+  );
+  const result = {};
+  for (const row of rows) {
+    const day = dayFromDate(row.date);
+    if (!result[day]) result[day] = {};
+    result[day][row.material_id] = { quantity: row.quantity, amount: row.amount, updated_at: row.updated_at };
+  }
+  res.json(result);
+}));
+
+// PUT /api/material-entries/:year/:month/:day  body: { entries: { "<material_id>": {quantity, amount}, ... } }
+app.put('/api/material-entries/:year/:month/:day', asyncRoute(async (req, res) => {
+  const { year, month, day } = req.params;
+  const y = parseInt(year, 10), m = parseInt(month, 10), d = parseInt(day, 10);
+  if (!isValidDate(y, m, d)) return res.status(400).json({ error: 'invalid date' });
+  const date = `${y}-${pad2(m)}-${pad2(d)}`;
+  if (date !== todayDateStr() && !canEditAnyDate(req)) {
+    return res.status(403).json({ error: 'Sign in with the worker or owner password to edit other dates.' });
+  }
+
+  const entries = req.body.entries || {};
+  for (const materialId of Object.keys(entries)) {
+    const { quantity, amount } = entries[materialId];
+    await query(`
+      INSERT INTO material_entries (material_id, date, quantity, amount, updated_at)
+      VALUES ($1, $2, $3, $4, now())
+      ON CONFLICT (material_id, date) DO UPDATE SET
+        quantity=excluded.quantity, amount=excluded.amount, updated_at=now()
+    `, [materialId, date, toNum(quantity), toNum(amount)]);
+  }
+
+  res.json({ ok: true, date });
+}));
+
+
+
+// GET /api/materials/report/2026-08-01/2026-08-27 -> totals per material over the range
+app.get('/api/materials/report/:start/:end', asyncRoute(async (req, res) => {
+  if (!isOwnerRequest(req)) return res.status(403).json({ error: 'Owner password required' });
+  const { start, end } = req.params;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+    return res.status(400).json({ error: 'start/end must be YYYY-MM-DD' });
+  }
+  if (!(new Date(start) <= new Date(end))) return res.status(400).json({ error: 'start must be on or before end' });
+
+  const { rows } = await query(`
+    SELECT m.id, m.name, m.track_quantity, m.track_amount,
+      COALESCE(SUM(e.quantity),0) AS "totalQuantity",
+      COALESCE(SUM(e.amount),0) AS "totalAmount"
+    FROM materials m
+    LEFT JOIN material_entries e ON e.material_id = m.id AND e.date BETWEEN $1 AND $2
+    GROUP BY m.id, m.name, m.track_quantity, m.track_amount, m.sort_order
+    ORDER BY m.sort_order, m.name
+  `, [start, end]);
+  res.json({ start, end, materials: rows });
+}));
+
+
+// GET /api/material-payments/:year/:month -> { "25": { "3": 1200, "7": 400 }, ... }
+// (outer key = day of month, inner key = material_id -> amount paid)
+app.get('/api/material-payments/:year/:month', asyncRoute(async (req, res) => {
+  const { year, month } = req.params;
+  const y = parseInt(year, 10), m = parseInt(month, 10);
+  if (!y || !m || m < 1 || m > 12) return res.status(400).json({ error: 'invalid year/month' });
+
+  const { rows } = await query(
+    `SELECT * FROM material_payments WHERE date LIKE $1 ORDER BY date`,
+    [monthPrefix(y, m) + '%']
+  );
+  const result = {};
+  for (const row of rows) {
+    const day = dayFromDate(row.date);
+    if (!result[day]) result[day] = {};
+    result[day][row.material_id] = row.amount;
+  }
+  res.json(result);
+}));
+
+// PUT /api/material-payments/:year/:month/:day  body: { entries: { "<material_id>": amount, ... } }
+app.put('/api/material-payments/:year/:month/:day', asyncRoute(async (req, res) => {
+  const { year, month, day } = req.params;
+  const y = parseInt(year, 10), m = parseInt(month, 10), d = parseInt(day, 10);
+  if (!isValidDate(y, m, d)) return res.status(400).json({ error: 'invalid date' });
+  const date = `${y}-${pad2(m)}-${pad2(d)}`;
+  if (date !== todayDateStr() && !canEditAnyDate(req)) {
+    return res.status(403).json({ error: 'Sign in with the worker or owner password to edit other dates.' });
+  }
+
+  const entries = req.body.entries || {};
+  for (const materialId of Object.keys(entries)) {
+    const amount = toNum(entries[materialId]);
+    await query(`
+      INSERT INTO material_payments (material_id, date, amount, updated_at)
+      VALUES ($1, $2, $3, now())
+      ON CONFLICT (material_id, date) DO UPDATE SET amount=excluded.amount, updated_at=now()
+    `, [materialId, date, amount]);
+  }
+
+  res.json({ ok: true, date });
+}));
+
+// GET /api/material-payments/report/2026-08-01/2026-08-27 -> total paid per material over the range
+app.get('/api/material-payments/report/:start/:end', asyncRoute(async (req, res) => {
+  if (!isOwnerRequest(req)) return res.status(403).json({ error: 'Owner password required' });
+  const { start, end } = req.params;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+    return res.status(400).json({ error: 'start/end must be YYYY-MM-DD' });
+  }
+  if (!(new Date(start) <= new Date(end))) return res.status(400).json({ error: 'start must be on or before end' });
+
+  const { rows } = await query(`
+    SELECT m.id, m.name, COALESCE(SUM(p.amount),0) AS "totalPaid"
+    FROM materials m
+    LEFT JOIN material_payments p ON p.material_id = m.id AND p.date BETWEEN $1 AND $2
+    GROUP BY m.id, m.name, m.sort_order
+    ORDER BY m.sort_order, m.name
+  `, [start, end]);
+  const grandTotal = rows.reduce((s, r) => s + Number(r.totalPaid), 0);
+  res.json({ start, end, materials: rows, grandTotal });
 }));
 
 // ---------------------------------------------------------------------------

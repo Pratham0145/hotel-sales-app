@@ -48,6 +48,7 @@ const NAV_GROUPS = [
       { key: 'foodtruck', label: 'Food Truck', icon: '🚚', href: '/FoodTruck' },
       { key: 'jpnagar',   label: 'JP Nagar',   icon: '🏠', href: '/JPNagar' },
       { key: 'items',     label: 'Items Used', icon: '📦', href: '/Items' },
+      { key: 'material',  label: 'Material',   icon: '🧺', href: '/Material' },
     ],
   },
   {

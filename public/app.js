@@ -427,6 +427,671 @@ initEntryView('app-items', {
     JP Nagar entries, to work out sale and wastage ratios across the whole business.`,
 });
 
+
+
+// ===========================================================================
+// Material — "All Materials" page (manage master list only)
+// ===========================================================================
+function initMaterialsAllView(containerId){
+  const container = document.getElementById(containerId);
+  if(!container) return;
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  container.innerHTML = `
+    <div class="card form-card materials-manage">
+      <div class="section-title">All materials</div>
+      <table class="materials-table">
+        <thead><tr><th>Name</th><th>Qty</th><th>Amt</th><th>Status</th></tr></thead>
+        <tbody id="${containerId}-matTableBody"></tbody>
+      </table>
+      <div class="add-material-row">
+        <input type="text" id="${containerId}-newMatName" placeholder="Material name">
+        <label><input type="checkbox" id="${containerId}-newMatQty" checked> Quantity</label>
+        <label><input type="checkbox" id="${containerId}-newMatAmt" checked> Amount</label>
+        <button class="today-btn" id="${containerId}-newMatAdd">+ Add</button>
+      </div>
+    </div>
+  `;
+
+  let materials = [];
+
+  async function load(){
+    try{ materials = await api('/api/materials'); }catch(e){ materials = []; }
+    render();
+  }
+
+  function render(){
+    const body = document.getElementById(`${containerId}-matTableBody`);
+    if(materials.length === 0){
+      body.innerHTML = `<tr><td colspan="4" class="lock-sub">No materials yet — add one below.</td></tr>`;
+      return;
+    }
+    body.innerHTML = materials.map(mat => `
+      <tr>
+        <td>${escapeHtml(mat.name)}</td>
+        <td>${mat.track_quantity ? '✓' : '—'}</td>
+        <td>${mat.track_amount ? '✓' : '—'}</td>
+        <td><button class="status-toggle ${mat.active ? 'active' : 'inactive'}" data-toggle-active="${mat.id}">${mat.active ? 'Active' : 'Inactive'}</button></td>
+      </tr>
+    `).join('');
+    body.querySelectorAll('[data-toggle-active]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const mat = materials.find(m => String(m.id) === btn.dataset.toggleActive);
+        try{
+          await api(`/api/materials/${mat.id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ active: !mat.active }) });
+          await load();
+        }catch(e){ showToast('Could not update (sign in first)'); }
+      });
+    });
+  }
+
+  document.getElementById(`${containerId}-newMatAdd`).addEventListener('click', async () => {
+    const nameEl = document.getElementById(`${containerId}-newMatName`);
+    const qtyEl = document.getElementById(`${containerId}-newMatQty`);
+    const amtEl = document.getElementById(`${containerId}-newMatAmt`);
+    const name = nameEl.value.trim();
+    if(!name){ showToast('Enter a material name'); return; }
+    const trackQty = !!qtyEl.checked, trackAmt = !!amtEl.checked;
+    if(!trackQty && !trackAmt){ showToast('Select Quantity and/or Amount'); return; }
+    try{
+      await api('/api/materials', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ name, track_quantity: trackQty, track_amount: trackAmt })
+      });
+      showToast('Material added ✓');
+      nameEl.value = ''; qtyEl.checked = true; amtEl.checked = true;
+      await load();
+    }catch(e){ showToast('Could not add material (sign in first)'); }
+  });
+
+  load();
+}
+
+// ===========================================================================
+// Material — "Materials Got" page (calendar + daily boxes only)
+// ===========================================================================
+function hasAnyMaterial(map, day){
+  const d = map[day];
+  if(!d) return false;
+  return Object.values(d).some(v => num(v.quantity) !== 0 || num(v.amount) !== 0);
+}
+function materialDayStatus(map, day){ return hasAnyMaterial(map, day) ? 'good' : 'empty'; }
+
+function initMaterialGotView(containerId){
+  const container = document.getElementById(containerId);
+  if(!container) return;
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  container.innerHTML = `
+    <div class="sidebar">
+      <div class="card cal-card">
+        <div class="cal-nav">
+          <button data-act="prevMonth">‹</button>
+          <div class="cal-title" id="${containerId}-calTitle"></div>
+          <button data-act="nextMonth">›</button>
+        </div>
+        <div class="cal-grid" id="${containerId}-calGrid"></div>
+      </div>
+      <div class="card month-stats" id="${containerId}-monthStats"></div>
+    </div>
+    <div class="main">
+      <div class="card day-header">
+        <div class="day-nav">
+          <button data-act="prevDay">‹</button>
+          <div>
+            <div class="day-title" id="${containerId}-dayTitle"></div>
+            <div class="day-sub" id="${containerId}-daySub"></div>
+          </div>
+          <button data-act="nextDay">›</button>
+        </div>
+        <button class="today-btn" data-act="today">Jump to today</button>
+      </div>
+      <div class="card form-card">
+        <div class="section-title">Material used / received</div>
+        <div class="material-grid" id="${containerId}-materials"></div>
+      </div>
+    </div>
+  `;
+
+  const state = { year:0, month:0, day:0, map:{}, materials:[] };
+  const now = new Date();
+  state.year = now.getFullYear(); state.month = now.getMonth()+1; state.day = now.getDate();
+
+  async function loadMaterials(){
+    try{ state.materials = await api('/api/materials'); }catch(e){ state.materials = []; }
+  }
+
+  let saveTimer = null;
+  function scheduleSave(day, materialId, field, value){
+    if(!state.map[day]) state.map[day] = {};
+    if(!state.map[day][materialId]) state.map[day][materialId] = { quantity:0, amount:0 };
+    state.map[day][materialId][field] = value;
+    renderMonthStats(); updateCalTile(day);
+
+    setSyncing(true);
+    if(saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+      try{
+        await api(`/api/material-entries/${state.year}/${state.month}/${day}`, {
+          method:'PUT', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ entries: state.map[day] })
+        });
+        setSyncing(false);
+        showToast('Saved to server ✓');
+      }catch(e){ setSyncing(false, true); }
+    }, 500);
+  }
+
+  async function loadMonth(){
+    try{ state.map = await api(`/api/material-entries/${state.year}/${state.month}`); }
+    catch(e){ state.map = {}; }
+    renderCalendar(); renderMonthStats(); renderDayForm();
+  }
+
+  function renderDayForm(){
+    const d = new Date(state.year, state.month-1, state.day);
+    const weekday = d.toLocaleDateString('en-IN', {weekday:'long'});
+    document.getElementById(`${containerId}-dayTitle`).textContent = `${weekday}, ${state.day} ${monthNames[state.month-1]} ${state.year}`;
+    document.getElementById(`${containerId}-daySub`).textContent = 'Goods used / received — both outlets';
+
+    const grid = document.getElementById(`${containerId}-materials`);
+    const dayData = state.map[state.day] || {};
+    const hasDataThisDay = (matId) => {
+      const e = dayData[matId];
+      return !!e && (num(e.quantity) !== 0 || num(e.amount) !== 0);
+    };
+    const visibleMaterials = state.materials.filter(m => m.active || hasDataThisDay(m.id));
+    if(visibleMaterials.length === 0){
+      grid.innerHTML = `<div class="lock-sub">No active materials — add or activate one in the "All Materials" tab.</div>`;
+      return;
+    }
+    grid.innerHTML = visibleMaterials.map(mat => {
+      const entry = dayData[mat.id] || {};
+      const qty = entry.quantity !== undefined ? entry.quantity : '';
+      const amt = entry.amount !== undefined ? entry.amount : '';
+      return `
+        <div class="material-box">
+          <div class="material-name"><span>${escapeHtml(mat.name)}${!mat.active ? ' <span style="color:var(--chili);font-size:11px;">(inactive)</span>' : ''}</span></div>
+          <div class="material-inputs">
+            ${mat.track_quantity ? `
+            <div class="field">
+              <label>Quantity</label>
+              <div class="field-input-wrap">
+                <input type="number" inputmode="decimal" step="any" placeholder="0" value="${qty}"
+                  data-material="${mat.id}" data-field="quantity">
+              </div>
+            </div>` : ''}
+            ${mat.track_amount ? `
+            <div class="field">
+              <label>Amount</label>
+              <div class="field-input-wrap">
+                <input type="number" inputmode="decimal" step="any" placeholder="0" value="${amt}"
+                  data-material="${mat.id}" data-field="amount">
+                <span class="unit">₹</span>
+              </div>
+            </div>` : ''}
+          </div>
+        </div>`;
+    }).join('');
+
+    grid.querySelectorAll('input[data-material]').forEach(inp => {
+      inp.addEventListener('input', () => scheduleSave(state.day, inp.dataset.material, inp.dataset.field, inp.value));
+    });
+  }
+
+  function renderCalendar(){
+    document.getElementById(`${containerId}-calTitle`).textContent = `${monthNames[state.month-1]} ${state.year}`;
+    const grid = document.getElementById(`${containerId}-calGrid`);
+    const nDays = daysInMonth(state.year, state.month);
+    const firstDow = new Date(state.year, state.month-1, 1).getDay();
+    const now2 = new Date();
+    const isCurMonth = now2.getFullYear()===state.year && (now2.getMonth()+1)===state.month;
+    let html = dowNames.map(dn => `<div class="cal-dow">${dn}</div>`).join('');
+    for(let i=0;i<firstDow;i++) html += `<div class="cal-day empty"></div>`;
+    for(let day=1; day<=nDays; day++){
+      const status = materialDayStatus(state.map, day);
+      const classes = ['cal-day'];
+      if(status !== 'empty') classes.push('filled', 'status-'+status);
+      if(day === state.day) classes.push('selected');
+      if(isCurMonth && day === now2.getDate()) classes.push('today');
+      html += `<div class="${classes.join(' ')}" data-day="${day}">${day}</div>`;
+    }
+    grid.innerHTML = html;
+    grid.querySelectorAll('.cal-day[data-day]').forEach(el => {
+      el.addEventListener('click', () => {
+        const day = parseInt(el.dataset.day,10);
+        if(!canEditDates() && day !== now2.getDate()){
+          showToast('🔒 Sign in to change the date');
+          return;
+        }
+        state.day = day; renderCalendar(); renderDayForm();
+      });
+    });
+  }
+
+  function updateCalTile(day){
+    const nDays = daysInMonth(state.year, state.month);
+    if(day < 1 || day > nDays) return;
+    const grid = document.getElementById(`${containerId}-calGrid`);
+    const el = grid.querySelector(`.cal-day[data-day="${day}"]`);
+    if(!el) return;
+    const status = materialDayStatus(state.map, day);
+    el.className = 'cal-day' + (status!=='empty' ? ' filled status-'+status : '') + (day===state.day ? ' selected' : '');
+    const now2 = new Date();
+    if(now2.getFullYear()===state.year && (now2.getMonth()+1)===state.month && day===now2.getDate()) el.classList.add('today');
+  }
+
+  function renderMonthStats(){
+    const nDays = daysInMonth(state.year, state.month);
+    let filledDays=0, totalAmount=0;
+    for(let day=1; day<=nDays; day++){
+      if(!hasAnyMaterial(state.map, day)) continue;
+      filledDays++;
+      Object.values(state.map[day]).forEach(e => totalAmount += num(e.amount));
+    }
+    document.getElementById(`${containerId}-monthStats`).innerHTML = `
+      <div class="stat-row"><span class="lbl">Days logged</span><span class="val">${filledDays}/${nDays}</span></div>
+      <div class="stat-row"><span class="lbl">Total spent</span><span class="val">${fmtMoney(totalAmount)}</span></div>
+    `;
+  }
+
+  async function changeMonth(delta){
+    if(!canEditDates()){ showToast('🔒 Sign in to change the date'); return; }
+    state.month += delta;
+    if(state.month < 1){ state.month = 12; state.year--; }
+    if(state.month > 12){ state.month = 1; state.year++; }
+    const nDays = daysInMonth(state.year, state.month);
+    if(state.day > nDays) state.day = nDays;
+    await loadMonth();
+  }
+  async function changeDay(delta){
+    if(!canEditDates()){ showToast('🔒 Sign in to change the date'); return; }
+    const nDays = daysInMonth(state.year, state.month);
+    let d = state.day + delta;
+    if(d < 1){ await changeMonth(-1); state.day = daysInMonth(state.year, state.month); renderCalendar(); renderDayForm(); return; }
+    if(d > nDays){ await changeMonth(1); state.day = 1; renderCalendar(); renderDayForm(); return; }
+    state.day = d;
+    renderCalendar(); renderDayForm();
+  }
+  async function goToday(){
+    const now2 = new Date();
+    state.year = now2.getFullYear(); state.month = now2.getMonth()+1; state.day = now2.getDate();
+    await loadMonth();
+  }
+
+  container.querySelectorAll('[data-act]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const act = btn.dataset.act;
+      if(act==='prevMonth') changeMonth(-1);
+      if(act==='nextMonth') changeMonth(1);
+      if(act==='prevDay') changeDay(-1);
+      if(act==='nextDay') changeDay(1);
+      if(act==='today') goToday();
+    });
+  });
+
+  (async () => { await loadMaterials(); await loadMonth(); })();
+  return state;
+}
+
+// ===========================================================================
+// Material — "Report" page (date-range totals per material)
+// ===========================================================================
+function initMaterialReportView(containerId){
+  const container = document.getElementById(containerId);
+  if(!container) return;
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${pad2(today.getMonth()+1)}-${pad2(today.getDate())}`;
+  const monthStartStr = `${today.getFullYear()}-${pad2(today.getMonth()+1)}-01`;
+
+  container.innerHTML = `
+    <div class="card form-card">
+      <div class="section-title">Generate material report for a date range</div>
+      <div class="add-material-row">
+        <label>From <input type="date" id="${containerId}-from" value="${monthStartStr}"></label>
+        <label>To <input type="date" id="${containerId}-to" value="${todayStr}"></label>
+        <button class="today-btn" id="${containerId}-generate">Generate</button>
+      </div>
+    </div>
+    <div class="card form-card" style="margin-top:14px;">
+      <div class="section-title">Totals</div>
+      <div id="${containerId}-result"><div class="lock-sub">Pick a date range and tap Generate.</div></div>
+    </div>
+  `;
+
+  const fromEl = document.getElementById(`${containerId}-from`);
+  const toEl = document.getElementById(`${containerId}-to`);
+  const resultEl = document.getElementById(`${containerId}-result`);
+
+  async function generate(){
+    const from = fromEl.value, to = toEl.value;
+    if(!from || !to) return;
+    if(from > to){ resultEl.innerHTML = `<div class="lock-sub">From date must be on or before the To date.</div>`; return; }
+    resultEl.innerHTML = `<div class="lock-sub">Generating…</div>`;
+    try{
+      const data = await api(`/api/materials/report/${from}/${to}`);
+      if(data.materials.length === 0){ resultEl.innerHTML = `<div class="lock-sub">No materials yet.</div>`; return; }
+      resultEl.innerHTML = `
+        <table class="materials-table">
+          <thead><tr><th>Material</th><th>Total Quantity</th><th>Total Amount</th></tr></thead>
+          <tbody>
+            ${data.materials.map(m => `
+              <tr>
+                <td>${escapeHtml(m.name)}</td>
+                <td>${m.track_quantity ? Number(m.totalQuantity).toLocaleString('en-IN') : '—'}</td>
+                <td>${m.track_amount ? fmtMoney(Number(m.totalAmount)) : '—'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }catch(e){
+      resultEl.innerHTML = `<div class="lock-sub">🔒 Owner sign-in required to view the material report.</div>`;
+    }
+  }
+
+  document.getElementById(`${containerId}-generate`).addEventListener('click', generate);
+  fromEl.addEventListener('change', generate);
+  toEl.addEventListener('change', generate);
+  generate(); // show current month's totals immediately, no click needed
+}
+
+
+// ===========================================================================
+// Material — "Payment" page (calendar + amount-only box per material)
+// ===========================================================================
+function hasAnyMaterialPayment(map, day){
+  const d = map[day];
+  if(!d) return false;
+  return Object.values(d).some(v => num(v) !== 0);
+}
+function materialPaymentDayStatus(map, day){ return hasAnyMaterialPayment(map, day) ? 'good' : 'empty'; }
+
+function initMaterialPaymentView(containerId){
+  const container = document.getElementById(containerId);
+  if(!container) return;
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  container.innerHTML = `
+    <div class="sidebar">
+      <div class="card cal-card">
+        <div class="cal-nav">
+          <button data-act="prevMonth">‹</button>
+          <div class="cal-title" id="${containerId}-calTitle"></div>
+          <button data-act="nextMonth">›</button>
+        </div>
+        <div class="cal-grid" id="${containerId}-calGrid"></div>
+      </div>
+      <div class="card month-stats" id="${containerId}-monthStats"></div>
+    </div>
+    <div class="main">
+      <div class="card day-header">
+        <div class="day-nav">
+          <button data-act="prevDay">‹</button>
+          <div>
+            <div class="day-title" id="${containerId}-dayTitle"></div>
+            <div class="day-sub" id="${containerId}-daySub"></div>
+          </div>
+          <button data-act="nextDay">›</button>
+        </div>
+        <button class="today-btn" data-act="today">Jump to today</button>
+      </div>
+      <div class="card form-card">
+        <div class="section-title">Amount paid per material</div>
+        <div class="material-grid" id="${containerId}-materials"></div>
+      </div>
+      <div class="card results-card">
+        <div class="results-title">Total paid today</div>
+        <div class="stat-grid" id="${containerId}-dayTotal"></div>
+      </div>
+    </div>
+  `;
+
+  const state = { year:0, month:0, day:0, map:{}, materials:[] };
+  const now = new Date();
+  state.year = now.getFullYear(); state.month = now.getMonth()+1; state.day = now.getDate();
+
+  async function loadMaterials(){
+    try{ state.materials = await api('/api/materials'); }catch(e){ state.materials = []; }
+  }
+
+  let saveTimer = null;
+  function scheduleSave(day, materialId, value){
+    if(!state.map[day]) state.map[day] = {};
+    state.map[day][materialId] = value;
+    renderDayTotal(); renderMonthStats(); updateCalTile(day);
+
+    setSyncing(true);
+    if(saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+      try{
+        await api(`/api/material-payments/${state.year}/${state.month}/${day}`, {
+          method:'PUT', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ entries: state.map[day] })
+        });
+        setSyncing(false);
+        showToast('Saved to server ✓');
+      }catch(e){ setSyncing(false, true); }
+    }, 500);
+  }
+
+  async function loadMonth(){
+    try{ state.map = await api(`/api/material-payments/${state.year}/${state.month}`); }
+    catch(e){ state.map = {}; }
+    renderCalendar(); renderMonthStats(); renderDayForm();
+  }
+
+  function renderDayForm(){
+    const d = new Date(state.year, state.month-1, state.day);
+    const weekday = d.toLocaleDateString('en-IN', {weekday:'long'});
+    document.getElementById(`${containerId}-dayTitle`).textContent = `${weekday}, ${state.day} ${monthNames[state.month-1]} ${state.year}`;
+    document.getElementById(`${containerId}-daySub`).textContent = 'Amount paid to material suppliers — both outlets';
+
+    const grid = document.getElementById(`${containerId}-materials`);
+    const dayData = state.map[state.day] || {};
+    const hasDataThisDay = (matId) => num(dayData[matId]) !== 0;
+    const visibleMaterials = state.materials.filter(m => m.active || hasDataThisDay(m.id));
+    if(visibleMaterials.length === 0){
+      grid.innerHTML = `<div class="lock-sub">No active materials — add or activate one in the "All Materials" tab.</div>`;
+      renderDayTotal();
+      return;
+    }
+    grid.innerHTML = visibleMaterials.map(mat => {
+      const val = dayData[mat.id] !== undefined ? dayData[mat.id] : '';
+      return `
+        <div class="material-box">
+          <div class="material-name"><span>${escapeHtml(mat.name)}${!mat.active ? ' <span style="color:var(--chili);font-size:11px;">(inactive)</span>' : ''}</span></div>
+          <div class="material-inputs">
+            <div class="field">
+              <label>Amount Paid</label>
+              <div class="field-input-wrap">
+                <input type="number" inputmode="decimal" step="any" placeholder="0" value="${val}"
+                  data-material="${mat.id}">
+                <span class="unit">₹</span>
+              </div>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+
+    grid.querySelectorAll('input[data-material]').forEach(inp => {
+      inp.addEventListener('input', () => scheduleSave(state.day, inp.dataset.material, inp.value));
+    });
+    renderDayTotal();
+  }
+
+  function renderDayTotal(){
+    const dayData = state.map[state.day] || {};
+    const total = Object.values(dayData).reduce((s,v) => s + num(v), 0);
+    document.getElementById(`${containerId}-dayTotal`).innerHTML =
+      `<div class="stat-card"><div class="s-label">Total Paid</div><div class="s-value">${fmtMoney(total)}</div></div>`;
+  }
+
+  function renderCalendar(){
+    document.getElementById(`${containerId}-calTitle`).textContent = `${monthNames[state.month-1]} ${state.year}`;
+    const grid = document.getElementById(`${containerId}-calGrid`);
+    const nDays = daysInMonth(state.year, state.month);
+    const firstDow = new Date(state.year, state.month-1, 1).getDay();
+    const now2 = new Date();
+    const isCurMonth = now2.getFullYear()===state.year && (now2.getMonth()+1)===state.month;
+    let html = dowNames.map(dn => `<div class="cal-dow">${dn}</div>`).join('');
+    for(let i=0;i<firstDow;i++) html += `<div class="cal-day empty"></div>`;
+    for(let day=1; day<=nDays; day++){
+      const status = materialPaymentDayStatus(state.map, day);
+      const classes = ['cal-day'];
+      if(status !== 'empty') classes.push('filled', 'status-'+status);
+      if(day === state.day) classes.push('selected');
+      if(isCurMonth && day === now2.getDate()) classes.push('today');
+      html += `<div class="${classes.join(' ')}" data-day="${day}">${day}</div>`;
+    }
+    grid.innerHTML = html;
+    grid.querySelectorAll('.cal-day[data-day]').forEach(el => {
+      el.addEventListener('click', () => {
+        const day = parseInt(el.dataset.day,10);
+        if(!canEditDates() && day !== now2.getDate()){
+          showToast('🔒 Sign in to change the date');
+          return;
+        }
+        state.day = day; renderCalendar(); renderDayForm();
+      });
+    });
+  }
+
+  function updateCalTile(day){
+    const nDays = daysInMonth(state.year, state.month);
+    if(day < 1 || day > nDays) return;
+    const grid = document.getElementById(`${containerId}-calGrid`);
+    const el = grid.querySelector(`.cal-day[data-day="${day}"]`);
+    if(!el) return;
+    const status = materialPaymentDayStatus(state.map, day);
+    el.className = 'cal-day' + (status!=='empty' ? ' filled status-'+status : '') + (day===state.day ? ' selected' : '');
+    const now2 = new Date();
+    if(now2.getFullYear()===state.year && (now2.getMonth()+1)===state.month && day===now2.getDate()) el.classList.add('today');
+  }
+
+  function renderMonthStats(){
+    const nDays = daysInMonth(state.year, state.month);
+    let filledDays=0, totalAmount=0;
+    for(let day=1; day<=nDays; day++){
+      if(!hasAnyMaterialPayment(state.map, day)) continue;
+      filledDays++;
+      totalAmount += Object.values(state.map[day]).reduce((s,v)=>s+num(v),0);
+    }
+    document.getElementById(`${containerId}-monthStats`).innerHTML = `
+      <div class="stat-row"><span class="lbl">Days logged</span><span class="val">${filledDays}/${nDays}</span></div>
+      <div class="stat-row"><span class="lbl">Total paid</span><span class="val">${fmtMoney(totalAmount)}</span></div>
+    `;
+  }
+
+  async function changeMonth(delta){
+    if(!canEditDates()){ showToast('🔒 Sign in to change the date'); return; }
+    state.month += delta;
+    if(state.month < 1){ state.month = 12; state.year--; }
+    if(state.month > 12){ state.month = 1; state.year++; }
+    const nDays = daysInMonth(state.year, state.month);
+    if(state.day > nDays) state.day = nDays;
+    await loadMonth();
+  }
+  async function changeDay(delta){
+    if(!canEditDates()){ showToast('🔒 Sign in to change the date'); return; }
+    const nDays = daysInMonth(state.year, state.month);
+    let d = state.day + delta;
+    if(d < 1){ await changeMonth(-1); state.day = daysInMonth(state.year, state.month); renderCalendar(); renderDayForm(); return; }
+    if(d > nDays){ await changeMonth(1); state.day = 1; renderCalendar(); renderDayForm(); return; }
+    state.day = d;
+    renderCalendar(); renderDayForm();
+  }
+  async function goToday(){
+    const now2 = new Date();
+    state.year = now2.getFullYear(); state.month = now2.getMonth()+1; state.day = now2.getDate();
+    await loadMonth();
+  }
+
+  container.querySelectorAll('[data-act]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const act = btn.dataset.act;
+      if(act==='prevMonth') changeMonth(-1);
+      if(act==='nextMonth') changeMonth(1);
+      if(act==='prevDay') changeDay(-1);
+      if(act==='nextDay') changeDay(1);
+      if(act==='today') goToday();
+    });
+  });
+
+  (async () => { await loadMaterials(); await loadMonth(); })();
+  return state;
+}
+
+// ===========================================================================
+// Material — "Payment Report" page (date-range totals paid, per material)
+// ===========================================================================
+function initMaterialPaymentReportView(containerId){
+  const container = document.getElementById(containerId);
+  if(!container) return;
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${pad2(today.getMonth()+1)}-${pad2(today.getDate())}`;
+  const monthStartStr = `${today.getFullYear()}-${pad2(today.getMonth()+1)}-01`;
+
+  container.innerHTML = `
+    <div class="card form-card">
+      <div class="section-title">Generate material payment report for a date range</div>
+      <div class="add-material-row">
+        <label>From <input type="date" id="${containerId}-from" value="${monthStartStr}"></label>
+        <label>To <input type="date" id="${containerId}-to" value="${todayStr}"></label>
+        <button class="today-btn" id="${containerId}-generate">Generate</button>
+      </div>
+    </div>
+    <div class="card form-card" style="margin-top:14px;">
+      <div class="section-title">Totals</div>
+      <div id="${containerId}-result"><div class="lock-sub">Loading…</div></div>
+    </div>
+  `;
+
+  const fromEl = document.getElementById(`${containerId}-from`);
+  const toEl = document.getElementById(`${containerId}-to`);
+  const resultEl = document.getElementById(`${containerId}-result`);
+
+  async function generate(){
+    const from = fromEl.value, to = toEl.value;
+    if(!from || !to) return;
+    if(from > to){ resultEl.innerHTML = `<div class="lock-sub">From date must be on or before the To date.</div>`; return; }
+    resultEl.innerHTML = `<div class="lock-sub">Generating…</div>`;
+    try{
+      const data = await api(`/api/material-payments/report/${from}/${to}`);
+      if(data.materials.length === 0){ resultEl.innerHTML = `<div class="lock-sub">No materials yet.</div>`; return; }
+      resultEl.innerHTML = `
+        <table class="materials-table">
+          <thead><tr><th>Material</th><th>Total Paid</th></tr></thead>
+          <tbody>
+            ${data.materials.map(m => `<tr><td>${escapeHtml(m.name)}</td><td>${fmtMoney(Number(m.totalPaid))}</td></tr>`).join('')}
+            <tr><td><strong>Grand Total</strong></td><td><strong>${fmtMoney(Number(data.grandTotal))}</strong></td></tr>
+          </tbody>
+        </table>
+      `;
+    }catch(e){
+      resultEl.innerHTML = `<div class="lock-sub">🔒 Owner sign-in required to view the material payment report.</div>`;
+    }
+  }
+
+  document.getElementById(`${containerId}-generate`).addEventListener('click', generate);
+  fromEl.addEventListener('change', generate);
+  toEl.addEventListener('change', generate);
+  generate();
+}
+
+
+
+initMaterialPaymentView('app-material-payment');
+initMaterialPaymentReportView('app-material-payment-report');
+initMaterialReportView('app-material-report');
+initMaterialsAllView('app-material-all');
+initMaterialGotView('app-material');
+
+
 // ===========================================================================
 // Owner views: Amount & Report — per-day, same calendar+day pattern as the
 // entry views, but read-only (values are computed from Truck + JP Nagar +
