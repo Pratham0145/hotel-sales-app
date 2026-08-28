@@ -264,8 +264,15 @@ app.delete('/api/materials/:id', asyncRoute(async (req, res) => {
 
 app.put('/api/materials/:id', asyncRoute(async (req, res) => {
   if (!canEditAnyDate(req)) return res.status(403).json({ error: 'Sign in required' });
-  const { active } = req.body;
-  const { rows } = await query('UPDATE materials SET active=$1 WHERE id=$2 RETURNING *', [active, req.params.id]);
+  const { active, last_month_remaining } = req.body;
+  const sets = [];
+  const values = [];
+  let i = 1;
+  if (active !== undefined) { sets.push(`active=$${i++}`); values.push(active); }
+  if (last_month_remaining !== undefined) { sets.push(`last_month_remaining=$${i++}`); values.push(toNum(last_month_remaining)); }
+  if (sets.length === 0) return res.status(400).json({ error: 'nothing to update' });
+  values.push(req.params.id);
+  const { rows } = await query(`UPDATE materials SET ${sets.join(', ')} WHERE id=$${i} RETURNING *`, values);
   res.json(rows[0]);
 }));
 
@@ -390,15 +397,31 @@ app.get('/api/material-payments/report/:start/:end', asyncRoute(async (req, res)
   }
   if (!(new Date(start) <= new Date(end))) return res.status(400).json({ error: 'start must be on or before end' });
 
+  // If From and To fall in the same calendar month, this is a "this month only" query
+  // and last month's carryover is excluded. If From is in an earlier month than To,
+  // the range is treated as spanning into the previous month, so carryover is included.
+  const crossesMonth = start.slice(0, 7) !== end.slice(0, 7);
+
   const { rows } = await query(`
-    SELECT m.id, m.name, COALESCE(SUM(p.amount),0) AS "totalPaid"
+    SELECT m.id, m.name, m.last_month_remaining, COALESCE(SUM(p.amount),0) AS "totalPaid"
     FROM materials m
     LEFT JOIN material_payments p ON p.material_id = m.id AND p.date BETWEEN $1 AND $2
-    GROUP BY m.id, m.name, m.sort_order
+    GROUP BY m.id, m.name, m.last_month_remaining, m.sort_order
     ORDER BY m.sort_order, m.name
   `, [start, end]);
-  const grandTotal = rows.reduce((s, r) => s + Number(r.totalPaid), 0);
-  res.json({ start, end, materials: rows, grandTotal });
+
+  const materials = rows.map(r => {
+    const carryover = crossesMonth ? Number(r.last_month_remaining || 0) : 0;
+    return {
+      id: r.id,
+      name: r.name,
+      periodPaid: Number(r.totalPaid),
+      carryover,
+      totalPaid: Number(r.totalPaid) + carryover,
+    };
+  });
+  const grandTotal = materials.reduce((s, m) => s + m.totalPaid, 0);
+  res.json({ start, end, crossesMonth, materials, grandTotal });
 }));
 
 // ---------------------------------------------------------------------------

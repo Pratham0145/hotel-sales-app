@@ -846,6 +846,10 @@ function initMaterialPaymentView(containerId){
         <div class="results-title">Total paid today</div>
         <div class="stat-grid" id="${containerId}-dayTotal"></div>
       </div>
+      <div class="card form-card">
+        <div class="section-title">Last Month Remaining (opening balance — not tied to any date)</div>
+        <div class="material-grid" id="${containerId}-carryover"></div>
+      </div>
     </div>
   `;
 
@@ -883,6 +887,47 @@ function initMaterialPaymentView(containerId){
     renderCalendar(); renderMonthStats(); renderDayForm();
   }
 
+  let carryTimer = null;
+  function renderCarryover(){
+    const grid = document.getElementById(`${containerId}-carryover`);
+    const activeMaterials = state.materials.filter(m => m.active);
+    if(activeMaterials.length === 0){
+      grid.innerHTML = `<div class="lock-sub">No active materials.</div>`;
+      return;
+    }
+    grid.innerHTML = activeMaterials.map(mat => `
+      <div class="material-box">
+        <div class="material-name"><span>${escapeHtml(mat.name)}</span></div>
+        <div class="material-inputs">
+          <div class="field">
+            <label>Last Month Remaining</label>
+            <div class="field-input-wrap">
+              <input type="number" inputmode="decimal" step="any" placeholder="0" value="${mat.last_month_remaining ?? 0}"
+                data-carryover="${mat.id}">
+              <span class="unit">₹</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `).join('');
+
+    grid.querySelectorAll('input[data-carryover]').forEach(inp => {
+      inp.addEventListener('input', () => {
+        clearTimeout(carryTimer);
+        setSyncing(true);
+        carryTimer = setTimeout(async () => {
+          try{
+            await api(`/api/materials/${inp.dataset.carryover}`, {
+              method:'PUT', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({ last_month_remaining: inp.value })
+            });
+            setSyncing(false);
+            showToast('Saved to server ✓');
+          }catch(e){ setSyncing(false, true); }
+        }, 500);
+      });
+    });
+  }
   function renderDayForm(){
     const d = new Date(state.year, state.month-1, state.day);
     const weekday = d.toLocaleDateString('en-IN', {weekday:'long'});
@@ -1020,7 +1065,7 @@ function initMaterialPaymentView(containerId){
     });
   });
 
-  (async () => { await loadMaterials(); await loadMonth(); })();
+    (async () => { await loadMaterials(); renderCarryover(); await loadMonth(); })();
   return state;
 }
 
@@ -1064,11 +1109,28 @@ function initMaterialPaymentReportView(containerId){
       const data = await api(`/api/material-payments/report/${from}/${to}`);
       if(data.materials.length === 0){ resultEl.innerHTML = `<div class="lock-sub">No materials yet.</div>`; return; }
       resultEl.innerHTML = `
+        ${data.crossesMonth ? `<div class="lock-sub" style="margin-bottom:10px;">Range spans a previous month — Last Month Remaining is included below.</div>` : ''}
         <table class="materials-table">
-          <thead><tr><th>Material</th><th>Total Paid</th></tr></thead>
+          <thead>
+            <tr>
+              <th>Material</th>
+              ${data.crossesMonth ? '<th>Last Month Remaining</th><th>Paid This Range</th>' : ''}
+              <th>${data.crossesMonth ? 'Total' : 'Total Paid'}</th>
+            </tr>
+          </thead>
           <tbody>
-            ${data.materials.map(m => `<tr><td>${escapeHtml(m.name)}</td><td>${fmtMoney(Number(m.totalPaid))}</td></tr>`).join('')}
-            <tr><td><strong>Grand Total</strong></td><td><strong>${fmtMoney(Number(data.grandTotal))}</strong></td></tr>
+            ${data.materials.map(m => `
+              <tr>
+                <td>${escapeHtml(m.name)}</td>
+                ${data.crossesMonth ? `<td>${fmtMoney(m.carryover)}</td><td>${fmtMoney(m.periodPaid)}</td>` : ''}
+                <td>${fmtMoney(m.totalPaid)}</td>
+              </tr>
+            `).join('')}
+            <tr>
+              <td><strong>Grand Total</strong></td>
+              ${data.crossesMonth ? '<td></td><td></td>' : ''}
+              <td><strong>${fmtMoney(Number(data.grandTotal))}</strong></td>
+            </tr>
           </tbody>
         </table>
       `;

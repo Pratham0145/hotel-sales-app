@@ -48,7 +48,6 @@ const NAV_GROUPS = [
       { key: 'foodtruck', label: 'Food Truck', icon: '🚚', href: '/FoodTruck' },
       { key: 'jpnagar',   label: 'JP Nagar',   icon: '🏠', href: '/JPNagar' },
       { key: 'items',     label: 'Items Used', icon: '📦', href: '/Items' },
-      { key: 'material',  label: 'Material',   icon: '🧺', href: '/Material' },
     ],
   },
   {
@@ -60,7 +59,15 @@ const NAV_GROUPS = [
       { key: 'payment', label: 'Payment', icon: '💵', href: '/Payment' },
     ],
   },
+  {
+    title: 'More',
+    items: [
+      { key: 'material', label: 'Material', icon: '🧺', href: '/Material' },
+    ],
+  },
 ];
+
+
 
 function renderChrome(){
   const page = document.body.dataset.page || '';
